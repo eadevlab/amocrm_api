@@ -1,3 +1,5 @@
+import datetime
+import time
 from typing import Tuple
 
 import requests
@@ -6,7 +8,44 @@ from . import exceptions
 from .filters import Filter
 from .tokens import default_token_manager
 
+from django.conf import settings as django_settings
+
+AMOCRM_LIMIT_FILE = getattr(django_settings, 'AMOCRM_LIMIT_FILE', None)
+AMOCRM_REQUEST_LIMIT_PERSEC = getattr(django_settings, 'AMOCRM_REQUEST_LIMIT_PERSEC', 7)
+
 _session = requests.Session()
+
+
+def check_limit(iteration=0):
+    if AMOCRM_LIMIT_FILE is None:
+        return True
+    iteration += 1
+    if iteration >= 4:
+        return True
+    file_sec = 0
+    current_reqs = 0
+    cur_sec = datetime.datetime.now().second
+    with open(AMOCRM_LIMIT_FILE, 'r+') as f:
+        content = f.read().split('-')
+        f.seek(0)
+        if len(content) == 1:
+            file_sec = cur_sec
+            current_reqs = 0
+        else:
+            file_sec = int(content[0])
+            current_reqs = int(content[1])
+        if file_sec == cur_sec:
+            current_reqs += 1
+            if current_reqs >= AMOCRM_REQUEST_LIMIT_PERSEC:
+                time.sleep(1)
+                f.close()
+                return check_limit(iteration)
+        else:
+            file_sec = cur_sec
+            current_reqs = 1
+        f.write('-'.join([str(file_sec), str(current_reqs)]))
+        f.close()
+    return True
 
 
 class BaseInteraction:
@@ -32,6 +71,7 @@ class BaseInteraction:
         return "https://{subdomain}.amocrm.ru/api/v4/{path}".format(subdomain=self._token_manager.subdomain, path=path)
 
     def _request(self, method, path, data=None, params=None, headers=None):
+        check_limit()
         headers = headers or {}
         headers.update(self.get_headers())
         try:
